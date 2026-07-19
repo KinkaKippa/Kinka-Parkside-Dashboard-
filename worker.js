@@ -79,7 +79,11 @@ function randomBytes(n) {
   return arr;
 }
 
-async function pbkdf2Hash(password, saltBytes, iterations = 150000) {
+// Cloudflare Workers' PBKDF2 implementation caps iteration count (this
+// runtime rejects anything above 10,000 with a NotSupportedError) — kept
+// well under that ceiling rather than the higher counts you'd use outside
+// this platform.
+async function pbkdf2Hash(password, saltBytes, iterations = 10000) {
   const enc = new TextEncoder();
   const keyMaterial = await crypto.subtle.importKey("raw", enc.encode(password), "PBKDF2", false, ["deriveBits"]);
   const bits = await crypto.subtle.deriveBits(
@@ -130,14 +134,14 @@ async function isSetupComplete(env) {
 async function setPassword(env, password) {
   const salt = randomBytes(16);
   const hash = await pbkdf2Hash(password, salt);
-  await env.TOKENS.put("auth:password", JSON.stringify({ salt: b64urlEncode(salt), hash: b64urlEncode(hash), iterations: 150000 }));
+  await env.TOKENS.put("auth:password", JSON.stringify({ salt: b64urlEncode(salt), hash: b64urlEncode(hash), iterations: 10000 }));
 }
 
 async function checkPassword(env, password) {
   const raw = await env.TOKENS.get("auth:password", "json");
   if (!raw) return false;
   const salt = b64urlDecode(raw.salt);
-  const hash = await pbkdf2Hash(password, salt, raw.iterations || 150000);
+  const hash = await pbkdf2Hash(password, salt, raw.iterations || 10000);
   return timingSafeEqual(hash, b64urlDecode(raw.hash));
 }
 
