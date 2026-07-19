@@ -1,0 +1,17 @@
+name = "kinka-parkside-dashboard"
+main = "worker.js"
+compatibility_date = "2026-07-01"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+[[kv_namespaces]]
+binding = "TOKENS"
+id = "REPLACE_AFTER_FIRST_DEPLOY"
+
+# Scheduled pull for sources that use Rung 2 (a stable authenticated export URL)
+# instead of a live API. Left commented until a source actually needs it.
+# [triggers]
+# crons = ["0 6 * * *"]
