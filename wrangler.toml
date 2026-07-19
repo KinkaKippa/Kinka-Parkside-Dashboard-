@@ -9,7 +9,10 @@ binding = "ASSETS"
 
 [[kv_namespaces]]
 binding = "TOKENS"
-id = "REPLACE_AFTER_FIRST_DEPLOY"
+# No id yet — Cloudflare auto-provisions this on first deploy and writes the
+# id back here. After that first successful deploy, pin it (read the id from
+# Cloudflare's dashboard: Storage & Databases -> KV) so a later deploy can't
+# orphan the saved password by provisioning a second, fresh namespace.
 
 # Scheduled pull for sources that use Rung 2 (a stable authenticated export URL)
 # instead of a live API. Left commented until a source actually needs it.
