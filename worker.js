@@ -41,6 +41,16 @@ const DEFAULT_SETTINGS = {
 
 const WAGE_KEYWORD_RE = /wages|salaries|superannuation|super|payroll|annual leave|long service|workcover/i;
 
+// Owner-confirmed wage/super accounts (confirmed 2026-07-21 during Milestone 4
+// reconciliation). Wage % = rostered venue staff labour only: "Wages and
+// Salaries (In Venue)" + "Superannuation (In Venue)". The owner explicitly
+// decided "Wages and Salaries (Overhead)" (admin/management salaries, not
+// tied to trading volume) should NOT count toward Wage % and instead falls
+// into the Overheads bucket, same as any other non-wage operating expense.
+// Used as the fallback when settings.confirmedWageAccounts hasn't been set
+// via the (not-yet-built) Settings UI — see summarizeXeroPnl's caller below.
+const CONFIRMED_WAGE_ACCOUNTS = ["Wages and Salaries (In Venue)", "Superannuation (In Venue)"];
+
 // ---------- small helpers ----------
 
 function json(data, init = {}) {
@@ -547,7 +557,11 @@ async function computeMetricsForRange(env, settings, start, end) {
   }
 
   let summary = null;
-  if (pnl) summary = summarizeXeroPnl(pnl, settings.confirmedWageAccounts);
+  const wageAccountsToUse =
+    settings.confirmedWageAccounts && settings.confirmedWageAccounts.length
+      ? settings.confirmedWageAccounts
+      : CONFIRMED_WAGE_ACCOUNTS;
+  if (pnl) summary = summarizeXeroPnl(pnl, wageAccountsToUse);
 
   return { summary, txCount, pnlError, squareError, xeroConfigured: !!xeroConn, squareConfigured: !!(env.SQUARE_ACCESS_TOKEN && settings.squareLocationIds?.length) };
 }
