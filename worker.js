@@ -737,6 +737,16 @@ async function handleApi(req, env, url) {
       xero: xeroConn ? { configured: true, tenantName: xeroConn.tenantName, connectedAt: xeroConn.connectedAt } : { configured: false },
       square: env.SQUARE_ACCESS_TOKEN ? { configured: true, ...squareInfo } : { configured: false },
       urhere: { configured: false, fallback: "Xero timesheet export covers actual Wage %; projected Wage % is not configured." },
+      // TEMPORARY diagnostic block — safe to leave in briefly, reveals no secret
+      // values, only whether/how the binding exists at runtime. Remove once
+      // the Square token binding issue is resolved.
+      _debug: {
+        squareTokenBound: typeof env.SQUARE_ACCESS_TOKEN,
+        squareTokenLength: env.SQUARE_ACCESS_TOKEN ? env.SQUARE_ACCESS_TOKEN.length : 0,
+        squareTokenFirst4: env.SQUARE_ACCESS_TOKEN ? env.SQUARE_ACCESS_TOKEN.slice(0, 4) : null,
+        xeroClientIdBound: typeof env.XERO_CLIENT_ID,
+        xeroClientSecretBound: typeof env.XERO_CLIENT_SECRET,
+      },
     });
   }
 
