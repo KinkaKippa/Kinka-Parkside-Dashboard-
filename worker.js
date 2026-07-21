@@ -11,7 +11,7 @@
 //                        timestamps, per-metric verified flags.
 //  - env.XERO_CLIENT_ID / XERO_CLIENT_SECRET  -> Cloudflare secrets (static app
 //                        credentials, set once via Variables and Secrets).
-//  - env.SQUARE_ACCESS_TOKEN                  -> Cloudflare secret (Square
+//  - env.SQUARE_API_TOKEN                  -> Cloudflare secret (Square
 //                        production personal access token, pasted once).
 //  - env.INGEST_TOKEN                         -> Cloudflare secret, the
 //                        owner's "upload code" for guided upload / scheduled
@@ -455,7 +455,7 @@ function summarizeXeroPnl(report, confirmedWageAccounts) {
 // ---------- Square adapter ----------
 
 async function squareTransactionCount(env, settings, fromDate, toDate) {
-  if (!env.SQUARE_ACCESS_TOKEN) return null;
+  if (!env.SQUARE_API_TOKEN) return null;
   // Square's Orders Search API, filtered to COMPLETED state within the date
   // range (venue timezone), for whichever location(s) were confirmed with
   // the owner at connection time (stored in settings.squareLocationIds).
@@ -468,7 +468,7 @@ async function squareTransactionCount(env, settings, fromDate, toDate) {
   const res = await fetch("https://connect.squareup.com/v2/orders/search", {
     method: "POST",
     headers: {
-      authorization: `Bearer ${env.SQUARE_ACCESS_TOKEN}`,
+      authorization: `Bearer ${env.SQUARE_API_TOKEN}`,
       "content-type": "application/json",
       "Square-Version": "2026-06-18",
     },
@@ -500,7 +500,7 @@ async function squareTransactionCount(env, settings, fromDate, toDate) {
     const pageRes = await fetch("https://connect.squareup.com/v2/orders/search", {
       method: "POST",
       headers: {
-        authorization: `Bearer ${env.SQUARE_ACCESS_TOKEN}`,
+        authorization: `Bearer ${env.SQUARE_API_TOKEN}`,
         "content-type": "application/json",
         "Square-Version": "2026-06-18",
       },
@@ -525,9 +525,9 @@ async function squareTransactionCount(env, settings, fromDate, toDate) {
 }
 
 async function squareBusinessInfo(env) {
-  if (!env.SQUARE_ACCESS_TOKEN) return null;
+  if (!env.SQUARE_API_TOKEN) return null;
   const res = await fetch("https://connect.squareup.com/v2/locations", {
-    headers: { authorization: `Bearer ${env.SQUARE_ACCESS_TOKEN}`, "Square-Version": "2026-06-18" },
+    headers: { authorization: `Bearer ${env.SQUARE_API_TOKEN}`, "Square-Version": "2026-06-18" },
   });
   if (!res.ok) return { error: `Square locations request failed (${res.status})` };
   const data = await res.json();
@@ -563,7 +563,7 @@ async function computeMetricsForRange(env, settings, start, end) {
       : CONFIRMED_WAGE_ACCOUNTS;
   if (pnl) summary = summarizeXeroPnl(pnl, wageAccountsToUse);
 
-  return { summary, txCount, pnlError, squareError, xeroConfigured: !!xeroConn, squareConfigured: !!(env.SQUARE_ACCESS_TOKEN && settings.squareLocationIds?.length) };
+  return { summary, txCount, pnlError, squareError, xeroConfigured: !!xeroConn, squareConfigured: !!(env.SQUARE_API_TOKEN && settings.squareLocationIds?.length) };
 }
 
 function pctOrNull(part, whole) {
@@ -732,18 +732,18 @@ async function handleApi(req, env, url) {
 
   if (path === "/api/connections" && req.method === "GET") {
     const xeroConn = await getXeroConnection(env);
-    const squareInfo = env.SQUARE_ACCESS_TOKEN ? await squareBusinessInfo(env).catch((e) => ({ error: String(e) })) : null;
+    const squareInfo = env.SQUARE_API_TOKEN ? await squareBusinessInfo(env).catch((e) => ({ error: String(e) })) : null;
     return json({
       xero: xeroConn ? { configured: true, tenantName: xeroConn.tenantName, connectedAt: xeroConn.connectedAt } : { configured: false },
-      square: env.SQUARE_ACCESS_TOKEN ? { configured: true, ...squareInfo } : { configured: false },
+      square: env.SQUARE_API_TOKEN ? { configured: true, ...squareInfo } : { configured: false },
       urhere: { configured: false, fallback: "Xero timesheet export covers actual Wage %; projected Wage % is not configured." },
       // TEMPORARY diagnostic block — safe to leave in briefly, reveals no secret
       // values, only whether/how the binding exists at runtime. Remove once
       // the Square token binding issue is resolved.
       _debug: {
-        squareTokenBound: typeof env.SQUARE_ACCESS_TOKEN,
-        squareTokenLength: env.SQUARE_ACCESS_TOKEN ? env.SQUARE_ACCESS_TOKEN.length : 0,
-        squareTokenFirst4: env.SQUARE_ACCESS_TOKEN ? env.SQUARE_ACCESS_TOKEN.slice(0, 4) : null,
+        squareTokenBound: typeof env.SQUARE_API_TOKEN,
+        squareTokenLength: env.SQUARE_API_TOKEN ? env.SQUARE_API_TOKEN.length : 0,
+        squareTokenFirst4: env.SQUARE_API_TOKEN ? env.SQUARE_API_TOKEN.slice(0, 4) : null,
         xeroClientIdBound: typeof env.XERO_CLIENT_ID,
         xeroClientSecretBound: typeof env.XERO_CLIENT_SECRET,
       },
