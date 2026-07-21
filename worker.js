@@ -256,6 +256,45 @@ function startOfWeek(dateStr, weekStartDay) {
   return addDays(dateStr, -diff);
 }
 
+// How far ahead of UTC a given IANA timezone is, in minutes, at a given
+// instant (handles DST automatically for zones that observe it; Brisbane/
+// Queensland doesn't, but this keeps it correct if the venue's timezone
+// setting is ever changed to one that does).
+function tzOffsetMinutes(utcMs, timeZone) {
+  const dtf = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  const parts = Object.fromEntries(dtf.formatToParts(new Date(utcMs)).map((p) => [p.type, p.value]));
+  const asIfUtc = Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour === 24 ? 0 : +parts.hour, +parts.minute, +parts.second);
+  return (asIfUtc - utcMs) / 60000;
+}
+
+// Converts a venue-local calendar date + time-of-day (e.g. midnight) into the
+// correct UTC instant, given the venue's IANA timezone. This is what
+// squareTransactionCount needs so that "today" for Square's search matches
+// the same real-world midnight-to-midnight window the owner sees on her own
+// Square dashboard — a naive `${dateStr}T00:00:00Z` treats the date as if it
+// were already UTC, which for Queensland (UTC+10) shifts every window ~10
+// hours late and mis-attributes early-morning trade to the wrong day.
+function zonedMidnightToUtcIso(dateStr, timeZone, hour = 0) {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  let guessMs = Date.UTC(y, m - 1, d, hour, 0, 0);
+  // Two passes handles the (rare) case where the initial guess lands on the
+  // wrong side of a DST transition.
+  for (let i = 0; i < 2; i++) {
+    const offsetMin = tzOffsetMinutes(guessMs, timeZone);
+    guessMs = Date.UTC(y, m - 1, d, hour, 0, 0) - offsetMin * 60000;
+  }
+  return new Date(guessMs).toISOString();
+}
+
 function financialYearStart(dateStr) {
   const [y, m] = dateStr.split("-").map(Number);
   const fyStartYear = m >= 7 ? y : y - 1;
@@ -454,15 +493,21 @@ function summarizeXeroPnl(report, confirmedWageAccounts) {
 
 // ---------- Square adapter ----------
 
-async function squareTransactionCount(env, locationIds, fromDate, toDate) {
+async function squareTransactionCount(env, locationIds, fromDate, toDate, timeZone) {
   if (!env.SQUARE_API_TOKEN) return null;
   // Square's Orders Search API, filtered to COMPLETED state within the date
   // range (venue timezone), for the resolved location(s) — see
   // resolveSquareLocationIds below for how the location list is picked.
   if (!locationIds || !locationIds.length) return null;
 
-  const startIso = `${fromDate}T00:00:00Z`;
-  const endIso = `${addDays(toDate, 1)}T00:00:00Z`;
+  // fromDate/toDate are venue-local calendar dates (e.g. "2026-07-21" means
+  // that whole trading day in the venue's own timezone) — convert their
+  // local midnight boundaries to the correct UTC instants rather than
+  // treating the date strings as if they were already UTC (see
+  // zonedMidnightToUtcIso for why that distinction matters).
+  const tz = timeZone || "Australia/Brisbane";
+  const startIso = zonedMidnightToUtcIso(fromDate, tz);
+  const endIso = zonedMidnightToUtcIso(addDays(toDate, 1), tz);
 
   const res = await fetch("https://connect.squareup.com/v2/orders/search", {
     method: "POST",
@@ -568,7 +613,7 @@ async function computeMetricsForRange(env, settings, start, end) {
     try {
       squareLocationIds = await resolveSquareLocationIds(env, settings);
       if (squareLocationIds && squareLocationIds.length) {
-        txCount = await squareTransactionCount(env, squareLocationIds, start, end);
+        txCount = await squareTransactionCount(env, squareLocationIds, start, end, settings.timezone);
       }
     } catch (e) {
       squareError = String(e.message || e);
