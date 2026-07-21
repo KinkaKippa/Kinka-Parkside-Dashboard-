@@ -454,12 +454,11 @@ function summarizeXeroPnl(report, confirmedWageAccounts) {
 
 // ---------- Square adapter ----------
 
-async function squareTransactionCount(env, settings, fromDate, toDate) {
+async function squareTransactionCount(env, locationIds, fromDate, toDate) {
   if (!env.SQUARE_API_TOKEN) return null;
   // Square's Orders Search API, filtered to COMPLETED state within the date
-  // range (venue timezone), for whichever location(s) were confirmed with
-  // the owner at connection time (stored in settings.squareLocationIds).
-  const locationIds = settings.squareLocationIds;
+  // range (venue timezone), for the resolved location(s) — see
+  // resolveSquareLocationIds below for how the location list is picked.
   if (!locationIds || !locationIds.length) return null;
 
   const startIso = `${fromDate}T00:00:00Z`;
@@ -534,6 +533,20 @@ async function squareBusinessInfo(env) {
   return { locations: (data.locations || []).map((l) => ({ id: l.id, name: l.name, status: l.status })) };
 }
 
+// Which Square location(s) count toward the transaction number. The owner
+// confirmed (2026-07-21) that ALL locations under this Square account should
+// be added together — rather than hardcode a specific list of location ids
+// (which would silently go stale if a location is renamed, added, or
+// removed), this pulls the live location list every time and includes every
+// ACTIVE one. settings.squareLocationIds still acts as an override/pin if a
+// future Settings UI lets the owner narrow this down.
+async function resolveSquareLocationIds(env, settings) {
+  if (settings.squareLocationIds && settings.squareLocationIds.length) return settings.squareLocationIds;
+  const info = await squareBusinessInfo(env);
+  if (!info || info.error || !info.locations) return null;
+  return info.locations.filter((l) => l.status === "ACTIVE").map((l) => l.id);
+}
+
 // ---------- metric computation ----------
 
 async function computeMetricsForRange(env, settings, start, end) {
@@ -550,10 +563,16 @@ async function computeMetricsForRange(env, settings, start, end) {
 
   let txCount = null;
   let squareError = null;
-  try {
-    txCount = await squareTransactionCount(env, settings, start, end);
-  } catch (e) {
-    squareError = String(e.message || e);
+  let squareLocationIds = null;
+  if (env.SQUARE_API_TOKEN) {
+    try {
+      squareLocationIds = await resolveSquareLocationIds(env, settings);
+      if (squareLocationIds && squareLocationIds.length) {
+        txCount = await squareTransactionCount(env, squareLocationIds, start, end);
+      }
+    } catch (e) {
+      squareError = String(e.message || e);
+    }
   }
 
   let summary = null;
@@ -563,7 +582,14 @@ async function computeMetricsForRange(env, settings, start, end) {
       : CONFIRMED_WAGE_ACCOUNTS;
   if (pnl) summary = summarizeXeroPnl(pnl, wageAccountsToUse);
 
-  return { summary, txCount, pnlError, squareError, xeroConfigured: !!xeroConn, squareConfigured: !!(env.SQUARE_API_TOKEN && settings.squareLocationIds?.length) };
+  return {
+    summary,
+    txCount,
+    pnlError,
+    squareError,
+    xeroConfigured: !!xeroConn,
+    squareConfigured: !!(env.SQUARE_API_TOKEN && squareLocationIds && squareLocationIds.length),
+  };
 }
 
 function pctOrNull(part, whole) {
@@ -737,16 +763,6 @@ async function handleApi(req, env, url) {
       xero: xeroConn ? { configured: true, tenantName: xeroConn.tenantName, connectedAt: xeroConn.connectedAt } : { configured: false },
       square: env.SQUARE_API_TOKEN ? { configured: true, ...squareInfo } : { configured: false },
       urhere: { configured: false, fallback: "Xero timesheet export covers actual Wage %; projected Wage % is not configured." },
-      // TEMPORARY diagnostic block — safe to leave in briefly, reveals no secret
-      // values, only whether/how the binding exists at runtime. Remove once
-      // the Square token binding issue is resolved.
-      _debug: {
-        squareTokenBound: typeof env.SQUARE_API_TOKEN,
-        squareTokenLength: env.SQUARE_API_TOKEN ? env.SQUARE_API_TOKEN.length : 0,
-        squareTokenFirst4: env.SQUARE_API_TOKEN ? env.SQUARE_API_TOKEN.slice(0, 4) : null,
-        xeroClientIdBound: typeof env.XERO_CLIENT_ID,
-        xeroClientSecretBound: typeof env.XERO_CLIENT_SECRET,
-      },
     });
   }
 
