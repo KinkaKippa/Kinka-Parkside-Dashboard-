@@ -882,6 +882,7 @@ async function handleApi(req, env, url) {
       unverified,
       lastSynced: { xero: lastSyncedXero ? Number(lastSyncedXero) : null, square: lastSyncedSquare ? Number(lastSyncedSquare) : null },
       errors: { pnl: current.pnlError || null, square: current.squareError || null },
+      _buildTag: "tzfix-2026-07-22-a",
     });
   }
 
