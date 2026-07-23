@@ -907,6 +907,44 @@ async function handleApi(req, env, url) {
     });
   }
 
+  // TEMPORARY diagnostic endpoint — day-by-day Square breakdown, used only to
+  // track down the transaction-count reconciliation gap (see build-progress
+  // notes). Safe to remove once reconciliation is confirmed: exposes only
+  // aggregate counts, no secrets, no customer data.
+  if (path === "/api/debug/square-daily" && req.method === "GET") {
+    const settings = await getSettings(env);
+    const start = url.searchParams.get("start");
+    const end = url.searchParams.get("end");
+    if (!start || !end) return badRequest("start and end required");
+    const squareLocationIds = await resolveSquareLocationIds(env, settings);
+    const days = [];
+    let d = start;
+    let guard = 0;
+    while (d <= end && guard < 62) {
+      guard++;
+      const debugOut = {};
+      let count = null;
+      try {
+        count = squareLocationIds && squareLocationIds.length
+          ? await squareTransactionCount(env, squareLocationIds, d, d, settings.timezone, debugOut)
+          : null;
+      } catch (e) {
+        debugOut.error = String(e.message || e);
+      }
+      days.push({ date: d, nonZeroCount: count, rawOrderCount: debugOut.rawOrderCount, zeroTotalCount: debugOut.zeroTotalCount });
+      d = addDays(d, 1);
+    }
+    const totals = days.reduce(
+      (acc, day) => ({
+        nonZero: acc.nonZero + (day.nonZeroCount || 0),
+        raw: acc.raw + (day.rawOrderCount || 0),
+        zero: acc.zero + (day.zeroTotalCount || 0),
+      }),
+      { nonZero: 0, raw: 0, zero: 0 }
+    );
+    return json({ locationIds: squareLocationIds, days, totals });
+  }
+
   if (path === "/api/trend" && req.method === "GET") {
     const settings = await getSettings(env);
     let period;
