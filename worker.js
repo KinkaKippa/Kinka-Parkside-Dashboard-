@@ -941,7 +941,9 @@ async function handleApi(req, env, url) {
     });
     if (!res.ok) return json({ error: `Square search failed (${res.status})`, text: await res.text() });
     const data = await res.json();
-    const orders = (data.orders || []).map((o) => ({
+    const onlyZero = url.searchParams.get("onlyZero") === "true";
+    const rawOrders = onlyZero ? (data.orders || []).filter((o) => !o.total_money || !o.total_money.amount) : data.orders || [];
+    const orders = rawOrders.map((o) => ({
       id: o.id,
       state: o.state,
       closedAt: o.closed_at,
@@ -951,8 +953,9 @@ async function handleApi(req, env, url) {
       refunds: o.refunds || null,
       returnAmounts: o.return_amounts || null,
       lineItemCount: (o.line_items || []).length,
+      source: o.source || null,
     }));
-    return json({ date, startIso, endIso, count: orders.length, orders });
+    return json({ date, startIso, endIso, totalCount: (data.orders || []).length, shownCount: orders.length, orders });
   }
 
   // TEMPORARY diagnostic endpoint — day-by-day Square breakdown, used only to
