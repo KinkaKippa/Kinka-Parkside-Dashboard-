@@ -941,8 +941,33 @@ async function handleApi(req, env, url) {
     });
     if (!res.ok) return json({ error: `Square search failed (${res.status})`, text: await res.text() });
     const data = await res.json();
+    const allOrders = data.orders || [];
+
+    // Duplicate check: a refunded ("Accidental Charge"-style) order has a
+    // negative/zero total_money plus a refunds[] entry recording the
+    // original amount_money that was refunded. If some OTHER order that same
+    // day has a positive total_money exactly matching that refunded amount,
+    // it's likely the original mistaken charge sitting in the list as its
+    // own separate order — meaning it's still being counted once as a real
+    // transaction even though the whole thing was a mistake that got
+    // reversed. This flags any such match so we can tell for sure rather
+    // than guessing from dollar-amount coincidences.
+    const nonPositive = allOrders.filter((o) => !o.total_money || o.total_money.amount <= 0);
+    const duplicateChecks = nonPositive.map((o) => {
+      const refundAmounts = (o.refunds || []).map((r) => r.amount_money && r.amount_money.amount).filter((a) => a != null);
+      const matches = allOrders.filter(
+        (other) => other.id !== o.id && other.total_money && other.total_money.amount > 0 && refundAmounts.includes(other.total_money.amount)
+      );
+      return {
+        id: o.id,
+        totalMoney: o.total_money,
+        refundAmounts,
+        possibleOriginalMatches: matches.map((m) => ({ id: m.id, totalMoney: m.total_money, closedAt: m.closed_at })),
+      };
+    });
+
     const onlyZero = url.searchParams.get("onlyZero") === "true";
-    const rawOrders = onlyZero ? (data.orders || []).filter((o) => !o.total_money || !o.total_money.amount) : data.orders || [];
+    const rawOrders = onlyZero ? allOrders.filter((o) => !o.total_money || !o.total_money.amount) : allOrders;
     const orders = rawOrders.map((o) => ({
       id: o.id,
       state: o.state,
@@ -955,7 +980,7 @@ async function handleApi(req, env, url) {
       lineItemCount: (o.line_items || []).length,
       source: o.source || null,
     }));
-    return json({ date, startIso, endIso, totalCount: (data.orders || []).length, shownCount: orders.length, orders });
+    return json({ date, startIso, endIso, totalCount: allOrders.length, shownCount: orders.length, orders, duplicateChecks });
   }
 
   // TEMPORARY diagnostic endpoint — day-by-day Square breakdown, used only to
