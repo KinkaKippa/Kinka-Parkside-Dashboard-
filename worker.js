@@ -540,23 +540,16 @@ async function squareTransactionCount(env, locationIds, fromDate, toDate, timeZo
     throw new Error(`Square orders search failed (${res.status}): ${text}`);
   }
 
-  let count = 0;
+  // Only orders with a non-zero total count as a real "transaction" for the
+  // dashboard — a $0 order (a comp, staff meal, or test sale) isn't a paying
+  // customer, and this matches how Square's own dashboard reporting counts
+  // transactions (confirmed 2026-07-22 by comparing a single day's count
+  // against the owner's own Square dashboard: 60 raw completed orders vs 59
+  // shown by Square, with exactly one $0 order in the difference).
   let cursor;
-  const orderSummaries = [];
-  const collect = (orders) => {
-    for (const o of orders || []) {
-      orderSummaries.push({
-        id: o.id,
-        totalMoney: o.total_money ? o.total_money.amount : null,
-        state: o.state,
-        closedAt: o.closed_at,
-        locationId: o.location_id,
-      });
-    }
-  };
+  const orders = [];
   let data = await res.json();
-  count += (data.orders || []).length;
-  collect(data.orders);
+  orders.push(...(data.orders || []));
   cursor = data.cursor;
   // Paginate if needed.
   let guard = 0;
@@ -583,16 +576,16 @@ async function squareTransactionCount(env, locationIds, fromDate, toDate, timeZo
     });
     if (!pageRes.ok) break;
     data = await pageRes.json();
-    count += (data.orders || []).length;
-    collect(data.orders);
+    orders.push(...(data.orders || []));
     cursor = data.cursor;
   }
+
+  const paidOrders = orders.filter((o) => o.total_money && o.total_money.amount > 0);
   if (debugOut) {
-    debugOut.orderCount = count;
-    debugOut.zeroTotalCount = orderSummaries.filter((o) => o.totalMoney === 0).length;
-    debugOut.orders = orderSummaries;
+    debugOut.rawOrderCount = orders.length;
+    debugOut.zeroTotalCount = orders.length - paidOrders.length;
   }
-  return count;
+  return paidOrders.length;
 }
 
 async function squareBusinessInfo(env) {
@@ -911,8 +904,6 @@ async function handleApi(req, env, url) {
       unverified,
       lastSynced: { xero: lastSyncedXero ? Number(lastSyncedXero) : null, square: lastSyncedSquare ? Number(lastSyncedSquare) : null },
       errors: { pnl: current.pnlError || null, square: current.squareError || null },
-      _buildTag: "tzfix-2026-07-22-c",
-      _debugSquare: { ...current.squareDebug, settingsTimezone: settings.timezone },
     });
   }
 
