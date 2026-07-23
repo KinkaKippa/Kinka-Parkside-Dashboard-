@@ -493,7 +493,7 @@ function summarizeXeroPnl(report, confirmedWageAccounts) {
 
 // ---------- Square adapter ----------
 
-async function squareTransactionCount(env, locationIds, fromDate, toDate, timeZone) {
+async function squareTransactionCount(env, locationIds, fromDate, toDate, timeZone, debugOut) {
   if (!env.SQUARE_API_TOKEN) return null;
   // Square's Orders Search API, filtered to COMPLETED state within the date
   // range (venue timezone), for the resolved location(s) — see
@@ -508,6 +508,14 @@ async function squareTransactionCount(env, locationIds, fromDate, toDate, timeZo
   const tz = timeZone || "Australia/Brisbane";
   const startIso = zonedMidnightToUtcIso(fromDate, tz);
   const endIso = zonedMidnightToUtcIso(addDays(toDate, 1), tz);
+  if (debugOut) {
+    debugOut.fromDate = fromDate;
+    debugOut.toDate = toDate;
+    debugOut.tz = tz;
+    debugOut.startIso = startIso;
+    debugOut.endIso = endIso;
+    debugOut.locationIds = locationIds;
+  }
 
   const res = await fetch("https://connect.squareup.com/v2/orders/search", {
     method: "POST",
@@ -609,11 +617,12 @@ async function computeMetricsForRange(env, settings, start, end) {
   let txCount = null;
   let squareError = null;
   let squareLocationIds = null;
+  const squareDebug = {};
   if (env.SQUARE_API_TOKEN) {
     try {
       squareLocationIds = await resolveSquareLocationIds(env, settings);
       if (squareLocationIds && squareLocationIds.length) {
-        txCount = await squareTransactionCount(env, squareLocationIds, start, end, settings.timezone);
+        txCount = await squareTransactionCount(env, squareLocationIds, start, end, settings.timezone, squareDebug);
       }
     } catch (e) {
       squareError = String(e.message || e);
@@ -632,6 +641,7 @@ async function computeMetricsForRange(env, settings, start, end) {
     txCount,
     pnlError,
     squareError,
+    squareDebug,
     xeroConfigured: !!xeroConn,
     squareConfigured: !!(env.SQUARE_API_TOKEN && squareLocationIds && squareLocationIds.length),
   };
@@ -882,7 +892,8 @@ async function handleApi(req, env, url) {
       unverified,
       lastSynced: { xero: lastSyncedXero ? Number(lastSyncedXero) : null, square: lastSyncedSquare ? Number(lastSyncedSquare) : null },
       errors: { pnl: current.pnlError || null, square: current.squareError || null },
-      _buildTag: "tzfix-2026-07-22-a",
+      _buildTag: "tzfix-2026-07-22-b",
+      _debugSquare: { ...current.squareDebug, settingsTimezone: settings.timezone },
     });
   }
 
