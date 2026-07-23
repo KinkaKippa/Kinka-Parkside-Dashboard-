@@ -907,6 +907,54 @@ async function handleApi(req, env, url) {
     });
   }
 
+  // TEMPORARY diagnostic endpoint — dumps the raw order fields for a single
+  // day so we can see exactly why some orders look like $0 (e.g. missing
+  // total_money vs a genuine zero, or a discount/refund reducing it). No
+  // customer PII involved, just order totals/state. Remove once the
+  // transaction-count reconciliation is confirmed.
+  if (path === "/api/debug/square-orders" && req.method === "GET") {
+    const settings = await getSettings(env);
+    const date = url.searchParams.get("date");
+    if (!date) return badRequest("date required");
+    const squareLocationIds = await resolveSquareLocationIds(env, settings);
+    if (!squareLocationIds || !squareLocationIds.length) return json({ error: "no locations" });
+    const tz = settings.timezone || "Australia/Brisbane";
+    const startIso = zonedMidnightToUtcIso(date, tz);
+    const endIso = zonedMidnightToUtcIso(addDays(date, 1), tz);
+    const res = await fetch("https://connect.squareup.com/v2/orders/search", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${env.SQUARE_API_TOKEN}`,
+        "content-type": "application/json",
+        "Square-Version": "2026-06-18",
+      },
+      body: JSON.stringify({
+        location_ids: squareLocationIds,
+        query: {
+          filter: {
+            state_filter: { states: ["COMPLETED"] },
+            date_time_filter: { closed_at: { start_at: startIso, end_at: endIso } },
+          },
+        },
+        limit: 500,
+      }),
+    });
+    if (!res.ok) return json({ error: `Square search failed (${res.status})`, text: await res.text() });
+    const data = await res.json();
+    const orders = (data.orders || []).map((o) => ({
+      id: o.id,
+      state: o.state,
+      closedAt: o.closed_at,
+      totalMoney: o.total_money,
+      netAmounts: o.net_amounts,
+      tenders: (o.tenders || []).map((t) => ({ amount: t.amount_money, type: t.type })),
+      refunds: o.refunds || null,
+      returnAmounts: o.return_amounts || null,
+      lineItemCount: (o.line_items || []).length,
+    }));
+    return json({ date, startIso, endIso, count: orders.length, orders });
+  }
+
   // TEMPORARY diagnostic endpoint — day-by-day Square breakdown, used only to
   // track down the transaction-count reconciliation gap (see build-progress
   // notes). Safe to remove once reconciliation is confirmed: exposes only
