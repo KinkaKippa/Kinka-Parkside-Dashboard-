@@ -542,8 +542,21 @@ async function squareTransactionCount(env, locationIds, fromDate, toDate, timeZo
 
   let count = 0;
   let cursor;
+  const orderSummaries = [];
+  const collect = (orders) => {
+    for (const o of orders || []) {
+      orderSummaries.push({
+        id: o.id,
+        totalMoney: o.total_money ? o.total_money.amount : null,
+        state: o.state,
+        closedAt: o.closed_at,
+        locationId: o.location_id,
+      });
+    }
+  };
   let data = await res.json();
   count += (data.orders || []).length;
+  collect(data.orders);
   cursor = data.cursor;
   // Paginate if needed.
   let guard = 0;
@@ -571,7 +584,13 @@ async function squareTransactionCount(env, locationIds, fromDate, toDate, timeZo
     if (!pageRes.ok) break;
     data = await pageRes.json();
     count += (data.orders || []).length;
+    collect(data.orders);
     cursor = data.cursor;
+  }
+  if (debugOut) {
+    debugOut.orderCount = count;
+    debugOut.zeroTotalCount = orderSummaries.filter((o) => o.totalMoney === 0).length;
+    debugOut.orders = orderSummaries;
   }
   return count;
 }
@@ -892,7 +911,7 @@ async function handleApi(req, env, url) {
       unverified,
       lastSynced: { xero: lastSyncedXero ? Number(lastSyncedXero) : null, square: lastSyncedSquare ? Number(lastSyncedSquare) : null },
       errors: { pnl: current.pnlError || null, square: current.squareError || null },
-      _buildTag: "tzfix-2026-07-22-b",
+      _buildTag: "tzfix-2026-07-22-c",
       _debugSquare: { ...current.squareDebug, settingsTimezone: settings.timezone },
     });
   }
