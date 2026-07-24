@@ -150,7 +150,13 @@
   }
   .tile .flag.warning { background: var(--warning); }
   .tile .flag.critical { background: var(--critical); }
-  .tile svg.spark { display: block; margin-top: 8px; width: 100%; height: 28px; }
+  .tile .bars { position: relative; margin-top: 10px; display: flex; gap: 3px; }
+  .tile .bars .bar-col { flex: 1; position: relative; }
+  .tile .bars .bar-col .bar { position: absolute; left: 0; right: 0; border-radius: 2px 2px 0 0; background: var(--series-1); }
+  .tile .bars .bar-col .bar.good { background: var(--good); }
+  .tile .bars .bar-col .bar.bad { background: var(--critical); }
+  .tile .bar-labels { display: flex; gap: 3px; margin-top: 4px; }
+  .tile .bar-labels span { flex: 1; text-align: center; font-size: 9px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .tile .confirm-link { display: inline-block; margin-top: 8px; font-size: 11px; }
 
   .section-title { font-size: 14px; font-weight: 600; margin: 28px 0 10px; }
@@ -303,6 +309,10 @@ const METRIC_META = {
   profit:       { label: "Profit", money: true, hasPct: true },
 };
 
+// Maps a metric key to the settings.targets field it's judged against.
+// Metrics not listed here have no target, so their bars are a single plain colour.
+const TARGET_KEY_FOR_METRIC = { cogs: "cogsPct", wagePct: "wagePct", overheads: "overheadsPct", profit: "profitPct" };
+
 let currentSettings = null;
 
 function fmtMoney(v) {
@@ -401,18 +411,71 @@ function onPeriodChange() {
   if (!isCustom) loadBoard();
 }
 
-function sparklinePath(values) {
+function formatBarLabel(dateStr) {
+  // dateStr is a plain "YYYY-MM-DD" from the worker; append a fixed local
+  // time so the browser doesn't reinterpret it as UTC and shift the day.
+  const d = new Date(`${dateStr}T00:00:00`);
+  return d.toLocaleDateString("en-AU", { day: "numeric", month: "short" });
+}
+
+// Builds the weekly bar chart + labels for one tile. Bar height is scaled to
+// the biggest magnitude (positive or negative) seen across the buckets, with
+// a zero baseline so a loss week (e.g. negative profit) hangs below the line
+// instead of being clipped. Metrics with a configured target (cogs, wage %,
+// overheads, profit) get each bar coloured green/red against that target;
+// metrics with no target (revenue, transactions, average customer spend)
+// stay a single plain colour, per the owner's confirmed preference.
+function weeklyBarsHtml(key, meta, trendData, targets) {
+  const buckets = trendData.trend || [];
+  if (!buckets.length) return "";
+
+  const values = buckets.map((b) => {
+    const bm = b.metrics[key];
+    if (!bm) return null;
+    return meta.isPctPrimary ? bm.pct : (typeof bm.value === "number" ? bm.value : null);
+  });
+  if (values.filter((v) => typeof v === "number").length < 2) return "";
+
+  const pctValues = buckets.map((b) => {
+    const bm = b.metrics[key];
+    return bm && typeof bm.pct === "number" ? bm.pct : null;
+  });
+
+  const targetKey = TARGET_KEY_FOR_METRIC[key];
+  const targetVal = targetKey && targets ? targets[targetKey] : null;
+  const hasTarget = targetVal !== null && targetVal !== undefined;
+
   const nums = values.filter((v) => typeof v === "number");
-  if (nums.length < 2) return "";
-  const min = Math.min(...nums), max = Math.max(...nums);
-  const w = 100, h = 24;
-  const range = max - min || 1;
-  const step = w / (values.length - 1);
-  return values.map((v, i) => {
-    const x = i * step;
-    const y = typeof v === "number" ? h - ((v - min) / range) * h : h / 2;
-    return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(" ");
+  const maxPos = Math.max(0, ...nums);
+  const maxNeg = Math.max(0, ...nums.map((v) => -v));
+  const span = (maxPos + maxNeg) || 1;
+  const areaH = 40; // px, must match .tile .bars height below
+  const pxPerUnit = areaH / span;
+  const baseline = maxNeg * pxPerUnit; // px from the bottom where zero sits
+
+  const barCols = [];
+  const labelSpans = [];
+  buckets.forEach((b, i) => {
+    const v = values[i];
+    const pv = pctValues[i];
+
+    let colorClass = "plain";
+    if (hasTarget && typeof pv === "number") {
+      const meetsTarget = key === "profit" ? pv >= targetVal : pv <= targetVal;
+      colorClass = meetsTarget ? "good" : "bad";
+    }
+
+    let h = 2, bottom = baseline;
+    if (typeof v === "number" && v !== 0) {
+      h = Math.max(2, Math.abs(v) * pxPerUnit);
+      bottom = v >= 0 ? baseline : baseline - h;
+    }
+
+    barCols.push(`<div class="bar-col"><div class="bar ${colorClass}" style="height:${h.toFixed(1)}px;bottom:${bottom.toFixed(1)}px;"></div></div>`);
+    labelSpans.push(`<span>${formatBarLabel(b.end)}</span>`);
+  });
+
+  return `<div class="bars" style="height:${areaH}px;">${barCols.join("")}</div><div class="bar-labels">${labelSpans.join("")}</div>`;
 }
 
 async function loadBoard() {
@@ -486,13 +549,7 @@ function renderBoard(data, trendData) {
     const confirmLink = m.configured && !m.verified
       ? `<button class="link confirm-link" onclick="confirmMetric('${key}')">Confirm this matches your books</button>` : "";
 
-    const trendValues = (trendData.trend || []).map((b) => {
-      const bm = b.metrics[key];
-      return meta.isPctPrimary ? bm.pct : (typeof bm.value === "number" ? bm.value : null);
-    });
-    const spark = m.configured && trendValues.filter((v) => typeof v === "number").length >= 2
-      ? `<svg class="spark" viewBox="0 0 100 24" preserveAspectRatio="none"><path d="${sparklinePath(trendValues)}" fill="none" stroke="var(--series-1)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`
-      : "";
+    const bars = m.configured ? weeklyBarsHtml(key, meta, trendData, target) : "";
 
     tile.innerHTML = `
       ${flag ? `<span class="flag ${flag}"></span>` : ""}
@@ -500,7 +557,7 @@ function renderBoard(data, trendData) {
       <div class="${valueClass}">${valueText}</div>
       <div class="sub">${sub}</div>
       ${deltaRow}
-      ${spark}
+      ${bars}
       ${confirmLink}
     `;
     grid.appendChild(tile);
