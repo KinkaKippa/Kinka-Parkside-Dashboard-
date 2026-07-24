@@ -22,6 +22,8 @@
     --serious:        #ec835a;
     --critical:       #d03b3b;
     --accent:         #2563eb;
+    --target-met:     #c4b5fd;
+    --target-missed:  #4c1d95;
   }
   @media (prefers-color-scheme: dark) {
     :root:where(:not([data-theme="light"])) {
@@ -40,6 +42,8 @@
       --warning:        #fab219;
       --serious:        #ec835a;
       --critical:       #e66767;
+      --target-met:     #ddd6fe;
+      --target-missed:  #6d28d9;
     }
   }
   :root[data-theme="dark"] {
@@ -58,6 +62,8 @@
     --warning:        #fab219;
     --serious:        #ec835a;
     --critical:       #e66767;
+    --target-met:     #ddd6fe;
+    --target-missed:  #6d28d9;
   }
 
   * { box-sizing: border-box; }
@@ -153,8 +159,8 @@
   .tile .bars { position: relative; margin-top: 10px; display: flex; gap: 3px; }
   .tile .bars .bar-col { flex: 1; position: relative; }
   .tile .bars .bar-col .bar { position: absolute; left: 0; right: 0; border-radius: 2px 2px 0 0; background: var(--series-1); }
-  .tile .bars .bar-col .bar.good { background: var(--good); }
-  .tile .bars .bar-col .bar.bad { background: var(--critical); }
+  .tile .bars .bar-col .bar.good { background: var(--target-met); }
+  .tile .bars .bar-col .bar.bad { background: var(--target-missed); }
   .tile .bar-labels { display: flex; gap: 3px; margin-top: 4px; }
   /* overflow is intentionally visible: only every Nth slot has text (see
      weeklyBarsHtml), and its neighbours are empty, so a label like "30 Jun"
