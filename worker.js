@@ -540,12 +540,6 @@ async function squareTransactionCount(env, locationIds, fromDate, toDate, timeZo
     throw new Error(`Square orders search failed (${res.status}): ${text}`);
   }
 
-  // Only orders with a non-zero total count as a real "transaction" for the
-  // dashboard — a $0 order (a comp, staff meal, or test sale) isn't a paying
-  // customer, and this matches how Square's own dashboard reporting counts
-  // transactions (confirmed 2026-07-22 by comparing a single day's count
-  // against the owner's own Square dashboard: 60 raw completed orders vs 59
-  // shown by Square, with exactly one $0 order in the difference).
   let cursor;
   const orders = [];
   let data = await res.json();
@@ -580,37 +574,20 @@ async function squareTransactionCount(env, locationIds, fromDate, toDate, timeZo
     cursor = data.cursor;
   }
 
-  // Some "$0/negative" entries are Square's record of an "Accidental Charge"
-  // refund (staff rang something up by mistake and refunded it straight
-  // away) — confirmed 2026-07-22 by inspecting the actual order data for a
-  // sample day. The refund order itself is already excluded below (it has no
-  // positive total), but the ORIGINAL mistaken charge often still sits in
-  // the results as its own separate order with a positive total, which would
-  // otherwise still get counted as a real sale even though the whole thing
-  // was reversed. This matches each refund's amount back to one same-day
-  // order with that exact total and excludes it too, so an accidental
-  // charge + its refund nets to zero counted transactions, not one.
-  const nonPositive = orders.filter((o) => !o.total_money || o.total_money.amount <= 0);
-  const excludedIds = new Set(nonPositive.map((o) => o.id));
-  const claimed = new Set();
-  for (const o of nonPositive) {
-    const refundAmounts = (o.refunds || []).map((r) => r.amount_money && r.amount_money.amount).filter((a) => a != null);
-    for (const amt of refundAmounts) {
-      const match = orders.find(
-        (other) => !excludedIds.has(other.id) && !claimed.has(other.id) && other.total_money && other.total_money.amount === amt
-      );
-      if (match) {
-        excludedIds.add(match.id);
-        claimed.add(match.id);
-      }
-    }
-  }
-
-  const paidOrders = orders.filter((o) => o.total_money && o.total_money.amount > 0 && !excludedIds.has(o.id));
+  // A real "transaction" is an order that actually had a payment taken
+  // against it. Square keeps a separate order record purely for tracking an
+  // "Accidental Charge" refund (staff rang something up by mistake and
+  // refunded it immediately) — confirmed 2026-07-22 by inspecting a sample
+  // day's raw order data: every one of these had an empty tenders[] array
+  // (no payment was ever attached) alongside a negative/zero total_money.
+  // A genuine sale — even one refunded later — still has its original
+  // tender recorded, so filtering on "has at least one tender" correctly
+  // keeps refunded-but-real sales while dropping these no-payment
+  // adjustment records, without needing to guess from the dollar amount.
+  const paidOrders = orders.filter((o) => o.tenders && o.tenders.length > 0);
   if (debugOut) {
     debugOut.rawOrderCount = orders.length;
-    debugOut.zeroTotalCount = nonPositive.length;
-    debugOut.matchedOriginalChargesExcluded = claimed.size;
+    debugOut.noTenderCount = orders.length - paidOrders.length;
   }
   return paidOrders.length;
 }
@@ -1034,16 +1011,16 @@ async function handleApi(req, env, url) {
       } catch (e) {
         debugOut.error = String(e.message || e);
       }
-      days.push({ date: d, nonZeroCount: count, rawOrderCount: debugOut.rawOrderCount, zeroTotalCount: debugOut.zeroTotalCount });
+      days.push({ date: d, paidCount: count, rawOrderCount: debugOut.rawOrderCount, noTenderCount: debugOut.noTenderCount });
       d = addDays(d, 1);
     }
     const totals = days.reduce(
       (acc, day) => ({
-        nonZero: acc.nonZero + (day.nonZeroCount || 0),
+        paid: acc.paid + (day.paidCount || 0),
         raw: acc.raw + (day.rawOrderCount || 0),
-        zero: acc.zero + (day.zeroTotalCount || 0),
+        noTender: acc.noTender + (day.noTenderCount || 0),
       }),
-      { nonZero: 0, raw: 0, zero: 0 }
+      { paid: 0, raw: 0, noTender: 0 }
     );
     return json({ locationIds: squareLocationIds, days, totals });
   }
