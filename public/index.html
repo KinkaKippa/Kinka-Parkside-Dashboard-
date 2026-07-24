@@ -383,7 +383,13 @@ async function loadSettingsGlobal() {
   const res = await api("/api/settings");
   currentSettings = await res.json();
   document.getElementById("venue-title").textContent = currentSettings.venueName || "Venue Dashboard";
-  if (currentSettings.accentColor) document.documentElement.style.setProperty("--accent", currentSettings.accentColor);
+  if (currentSettings.accentColor) {
+    document.documentElement.style.setProperty("--accent", currentSettings.accentColor);
+    // Chart lines (sparklines) use a separate --series-1 variable, not
+    // --accent, so without this the owner's chosen colour would only show up
+    // on buttons/links and the charts would stay the old default blue.
+    document.documentElement.style.setProperty("--series-1", currentSettings.accentColor);
+  }
 }
 
 function onPeriodChange() {
