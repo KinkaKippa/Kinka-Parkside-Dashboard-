@@ -580,10 +580,37 @@ async function squareTransactionCount(env, locationIds, fromDate, toDate, timeZo
     cursor = data.cursor;
   }
 
-  const paidOrders = orders.filter((o) => o.total_money && o.total_money.amount > 0);
+  // Some "$0/negative" entries are Square's record of an "Accidental Charge"
+  // refund (staff rang something up by mistake and refunded it straight
+  // away) — confirmed 2026-07-22 by inspecting the actual order data for a
+  // sample day. The refund order itself is already excluded below (it has no
+  // positive total), but the ORIGINAL mistaken charge often still sits in
+  // the results as its own separate order with a positive total, which would
+  // otherwise still get counted as a real sale even though the whole thing
+  // was reversed. This matches each refund's amount back to one same-day
+  // order with that exact total and excludes it too, so an accidental
+  // charge + its refund nets to zero counted transactions, not one.
+  const nonPositive = orders.filter((o) => !o.total_money || o.total_money.amount <= 0);
+  const excludedIds = new Set(nonPositive.map((o) => o.id));
+  const claimed = new Set();
+  for (const o of nonPositive) {
+    const refundAmounts = (o.refunds || []).map((r) => r.amount_money && r.amount_money.amount).filter((a) => a != null);
+    for (const amt of refundAmounts) {
+      const match = orders.find(
+        (other) => !excludedIds.has(other.id) && !claimed.has(other.id) && other.total_money && other.total_money.amount === amt
+      );
+      if (match) {
+        excludedIds.add(match.id);
+        claimed.add(match.id);
+      }
+    }
+  }
+
+  const paidOrders = orders.filter((o) => o.total_money && o.total_money.amount > 0 && !excludedIds.has(o.id));
   if (debugOut) {
     debugOut.rawOrderCount = orders.length;
-    debugOut.zeroTotalCount = orders.length - paidOrders.length;
+    debugOut.zeroTotalCount = nonPositive.length;
+    debugOut.matchedOriginalChargesExcluded = claimed.size;
   }
   return paidOrders.length;
 }
