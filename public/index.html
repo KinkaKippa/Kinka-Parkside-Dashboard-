@@ -156,7 +156,11 @@
   .tile .bars .bar-col .bar.good { background: var(--good); }
   .tile .bars .bar-col .bar.bad { background: var(--critical); }
   .tile .bar-labels { display: flex; gap: 3px; margin-top: 4px; }
-  .tile .bar-labels span { flex: 1; text-align: center; font-size: 9px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* overflow is intentionally visible: only every Nth slot has text (see
+     weeklyBarsHtml), and its neighbours are empty, so a label like "30 Jun"
+     is allowed to spill sideways into that empty room instead of being
+     clipped to fit its own narrow 1/8-width slot. */
+  .tile .bar-labels span { flex: 1; text-align: center; font-size: 9px; color: var(--muted); white-space: nowrap; overflow: visible; }
   .tile .confirm-link { display: inline-block; margin-top: 8px; font-size: 11px; }
 
   .section-title { font-size: 14px; font-weight: 600; margin: 28px 0 10px; }
