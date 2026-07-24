@@ -453,6 +453,11 @@ function weeklyBarsHtml(key, meta, trendData, targets) {
   const pxPerUnit = areaH / span;
   const baseline = maxNeg * pxPerUnit; // px from the bottom where zero sits
 
+  // Only label a handful of bars, evenly spaced and always including the most
+  // recent one — labelling every single bar left no room for the month
+  // (e.g. "30 Jun"), so it was getting cut down to just "30 …".
+  const labelEvery = Math.max(1, Math.ceil(buckets.length / 4));
+
   const barCols = [];
   const labelSpans = [];
   buckets.forEach((b, i) => {
@@ -472,7 +477,8 @@ function weeklyBarsHtml(key, meta, trendData, targets) {
     }
 
     barCols.push(`<div class="bar-col"><div class="bar ${colorClass}" style="height:${h.toFixed(1)}px;bottom:${bottom.toFixed(1)}px;"></div></div>`);
-    labelSpans.push(`<span>${formatBarLabel(b.end)}</span>`);
+    const fromEnd = buckets.length - 1 - i;
+    labelSpans.push(fromEnd % labelEvery === 0 ? `<span>${formatBarLabel(b.end)}</span>` : `<span></span>`);
   });
 
   return `<div class="bars" style="height:${areaH}px;">${barCols.join("")}</div><div class="bar-labels">${labelSpans.join("")}</div>`;
