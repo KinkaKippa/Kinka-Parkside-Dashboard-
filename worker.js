@@ -8,7 +8,11 @@
 // Storage:
 //  - env.TOKENS (KV)  -> auth password hash, session signing key, settings,
 //                        rotating Xero OAuth tokens, ingest cache, last-synced
-//                        timestamps, per-metric verified flags.
+//                        timestamps, per-metric verified flags, and a
+//                        read-through cache ("cache:xero:pnl:...",
+//                        "cache:square:tx:...", "cache:square:locations")
+//                        for date ranges that have already closed — see
+//                        withRangeCache.
 //  - env.XERO_CLIENT_ID / XERO_CLIENT_SECRET  -> Cloudflare secrets (static app
 //                        credentials, set once via Variables and Secrets).
 //  - env.SQUARE_API_TOKEN                  -> Cloudflare secret (Square
@@ -357,12 +361,82 @@ function resolvePeriod(kind, settings, customStart, customEnd) {
   return { kind, label, start, end, previousPeriod, sameLastYear };
 }
 
+// ---------- read-through caching (KV) ----------
+//
+// Xero's Reports API and Square's Orders Search are both slow (often 1-3s
+// per call), and before this every Board/trend load re-fetched every single
+// date range fresh — current period, previous period, same period last
+// year, plus 8 trend buckets, each its own live Xero + Square round trip.
+// A range that has already finished (its end date is before "today" in the
+// venue's own timezone) can never change again except via a rare
+// bookkeeping correction, so its result is safe to cache; a range that
+// still includes today is always fetched live so the board never shows a
+// stale same-day number. Comparison periods and every trend bucket are, by
+// construction, always fully in the past, so in steady state only the one
+// current/in-progress period ever hits Xero or Square live.
+const CACHE_TTL_SECONDS = 6 * 60 * 60; // 6h: fast repeat loads, still catches same-day Xero corrections.
+
+function isClosedRange(end, settings) {
+  return end < todayInVenue(settings);
+}
+
+async function cacheGet(env, key) {
+  return env.TOKENS.get(key, "json");
+}
+
+async function cacheSet(env, key, value, ttlSeconds = CACHE_TTL_SECONDS) {
+  await env.TOKENS.put(key, JSON.stringify(value), { expirationTtl: ttlSeconds });
+}
+
+// Runs `fn` and caches its result under `key`, but only when [*, end] is a
+// fully-closed range — an in-progress range is always recomputed live.
+async function withRangeCache(env, settings, end, key, fn) {
+  const cacheable = isClosedRange(end, settings);
+  if (cacheable) {
+    const cached = await cacheGet(env, key);
+    if (cached !== null && cached !== undefined) return cached;
+  }
+  const result = await fn();
+  if (cacheable) await cacheSet(env, key, result);
+  return result;
+}
+
 // ---------- Xero adapter ----------
 
 const XERO_AUTHORIZE_URL = "https://login.xero.com/identity/connect/authorize";
 const XERO_TOKEN_URL = "https://identity.xero.com/connect/token";
 const XERO_CONNECTIONS_URL = "https://api.xero.com/connections";
 const XERO_SCOPES = "offline_access accounting.reports.profitandloss.read";
+
+// Venue split (owner set this up in Xero 2026-10-22): a single tracking
+// category called "Business" carries four options. Xero's P&L report
+// filters to exactly one tracking option per call, so "Kinka Kippa" below
+// is built from two separate filtered calls (its own trading + its
+// catering arm) summed together — see computeVenueMetricSets. If the
+// owner ever renames or recreates this tracking category/options in Xero,
+// these ids will need updating to match (confirmed live via Xero on the
+// date above; names are shown here only as a human-readable label).
+const XERO_TRACKING_CATEGORY_ID = "c429fd49-d5f3-4cfa-85cb-a57424df4e24"; // "Business"
+const XERO_TRACKING_OPTIONS = {
+  kinkaKippa: "0fac62ea-af0f-42e6-8c70-92605c24af69", // "Kinka Kippa"
+  kinkaKippaCatering: "5aa3f4cc-140a-4df2-afc9-5bea1a301c36", // "Kinka Kippa Catering"
+  parksideSnackShack: "8a1e8ef0-066e-4ee1-95ec-c3bcbabffea5", // "Parkside Snack Shack"
+  // "Shared Overheads" (5d5e2235-a911-4533-9267-11bded756109) is
+  // deliberately never filtered to on its own — per the owner's
+  // 2026-10-22 decision, those costs should only ever show up in the
+  // combined Total, never split or allocated between the two venues.
+};
+
+// Each venue tile = one or more tracking options summed together.
+const VENUES = [
+  { key: "kinkaKippa", label: "Kinka Kippa", optionIds: [XERO_TRACKING_OPTIONS.kinkaKippa, XERO_TRACKING_OPTIONS.kinkaKippaCatering] },
+  { key: "parksideSnackShack", label: "Parkside Snack Shack", optionIds: [XERO_TRACKING_OPTIONS.parksideSnackShack] },
+];
+
+// Metrics shown per-venue — transactions/ACS stay Total-only (Square
+// locations are a different dimension from the Xero tracking category and
+// weren't part of this split).
+const VENUE_METRIC_KEYS = ["revenue", "cogs", "wagePct", "overheads", "profit"];
 
 async function xeroTokenRequest(env, body) {
   const basic = btoa(`${env.XERO_CLIENT_ID}:${env.XERO_CLIENT_SECRET}`);
@@ -416,12 +490,16 @@ async function ensureXeroAccessToken(env) {
   return updated;
 }
 
-async function fetchXeroProfitAndLoss(env, fromDate, toDate) {
+async function fetchXeroProfitAndLoss(env, fromDate, toDate, trackingOptionId = null) {
   const conn = await ensureXeroAccessToken(env);
   if (!conn) return null;
   const url = new URL("https://api.xero.com/api.xro/2.0/Reports/ProfitAndLoss");
   url.searchParams.set("fromDate", fromDate);
   url.searchParams.set("toDate", toDate);
+  if (trackingOptionId) {
+    url.searchParams.set("trackingCategoryID", XERO_TRACKING_CATEGORY_ID);
+    url.searchParams.set("trackingOptionID", trackingOptionId);
+  }
   const res = await fetch(url.toString(), {
     headers: {
       authorization: `Bearer ${conn.accessToken}`,
@@ -489,6 +567,26 @@ function summarizeXeroPnl(report, confirmedWageAccounts) {
   const overheadsTotal = operatingExpensesTotal - wagesTotal;
 
   return { revenue, cogs, wagesTotal, overheadsTotal, wageLines, overheadLines, wageAutoDetected: !(confirmedWageAccounts && confirmedWageAccounts.length) };
+}
+
+// Adds two already-summarized P&L results together — used to combine
+// "Kinka Kippa" with its separately-tracked "Kinka Kippa Catering" option
+// into one venue figure. Must sum the raw dollar fields BEFORE any
+// percentage is calculated (percentages are re-derived from the combined
+// totals downstream in buildMetricSet, never averaged).
+function mergeSummaries(a, b) {
+  if (!a && !b) return null;
+  if (!a) return b;
+  if (!b) return a;
+  return {
+    revenue: a.revenue + b.revenue,
+    cogs: a.cogs + b.cogs,
+    wagesTotal: a.wagesTotal + b.wagesTotal,
+    overheadsTotal: a.overheadsTotal + b.overheadsTotal,
+    wageLines: [...a.wageLines, ...b.wageLines],
+    overheadLines: [...a.overheadLines, ...b.overheadLines],
+    wageAutoDetected: a.wageAutoDetected || b.wageAutoDetected,
+  };
 }
 
 // ---------- Square adapter ----------
@@ -611,9 +709,19 @@ async function squareBusinessInfo(env) {
 // future Settings UI lets the owner narrow this down.
 async function resolveSquareLocationIds(env, settings) {
   if (settings.squareLocationIds && settings.squareLocationIds.length) return settings.squareLocationIds;
+  // The location list rarely changes, but every board/trend load used to
+  // re-fetch it independently for every single date range being computed
+  // (current period, previous period, same period last year, 8 trend
+  // buckets — a dozen-plus redundant calls for one page view). A short TTL
+  // keeps it fast without risking a renamed/added location going unnoticed
+  // for long.
+  const cached = await cacheGet(env, "cache:square:locations");
+  if (cached) return cached;
   const info = await squareBusinessInfo(env);
   if (!info || info.error || !info.locations) return null;
-  return info.locations.filter((l) => l.status === "ACTIVE").map((l) => l.id);
+  const ids = info.locations.filter((l) => l.status === "ACTIVE").map((l) => l.id);
+  await cacheSet(env, "cache:square:locations", ids, 10 * 60);
+  return ids;
 }
 
 // ---------- metric computation ----------
@@ -624,7 +732,7 @@ async function computeMetricsForRange(env, settings, start, end) {
   let pnlError = null;
   if (xeroConn) {
     try {
-      pnl = await fetchXeroProfitAndLoss(env, start, end);
+      pnl = await withRangeCache(env, settings, end, `cache:xero:pnl:${start}:${end}:all`, () => fetchXeroProfitAndLoss(env, start, end));
     } catch (e) {
       pnlError = String(e.message || e);
     }
@@ -638,7 +746,9 @@ async function computeMetricsForRange(env, settings, start, end) {
     try {
       squareLocationIds = await resolveSquareLocationIds(env, settings);
       if (squareLocationIds && squareLocationIds.length) {
-        txCount = await squareTransactionCount(env, squareLocationIds, start, end, settings.timezone, squareDebug);
+        txCount = await withRangeCache(env, settings, end, `cache:square:tx:${start}:${end}`, () =>
+          squareTransactionCount(env, squareLocationIds, start, end, settings.timezone, squareDebug)
+        );
       }
     } catch (e) {
       squareError = String(e.message || e);
@@ -705,6 +815,57 @@ function buildMetricSet(range, settings) {
       verified: !!settings.verified.profit,
     },
   };
+}
+
+// Builds Revenue/COGS/Wage%/Overheads/Profit for each venue (Kinka Kippa —
+// its own trading plus its catering option, summed — and Parkside Snack
+// Shack) for one date range. "Shared Overheads" is never pulled in here on
+// purpose: those costs only ever appear in the combined Total computed by
+// computeMetricsForRange, never split or allocated between venues (the
+// owner's call, 2026-10-22). Transactions/ACS aren't part of this: Square
+// locations are a different dimension from the Xero tracking category and
+// weren't included in the split, so those two keys always come back
+// "not configured" per venue — the UI only reads VENUE_METRIC_KEYS anyway.
+//
+// Every underlying Xero call is run in parallel and goes through the same
+// closed-range cache as the Total figures, so only a venue's current,
+// still-open period ever has to hit Xero live.
+async function computeVenueMetricSets(env, settings, start, end) {
+  const xeroConn = await getXeroConnection(env);
+  if (!xeroConn) {
+    return Object.fromEntries(
+      VENUES.map((v) => [v.key, buildMetricSet({ summary: null, txCount: null, xeroConfigured: false, squareConfigured: false }, settings)])
+    );
+  }
+
+  const wageAccountsToUse =
+    settings.confirmedWageAccounts && settings.confirmedWageAccounts.length ? settings.confirmedWageAccounts : CONFIRMED_WAGE_ACCOUNTS;
+
+  const jobs = VENUES.flatMap((venue) => venue.optionIds.map((optionId) => ({ venueKey: venue.key, optionId })));
+  const fetched = await Promise.all(
+    jobs.map(({ optionId }) =>
+      withRangeCache(env, settings, end, `cache:xero:pnl:${start}:${end}:${optionId}`, () => fetchXeroProfitAndLoss(env, start, end, optionId)).then(
+        (pnl) => ({ ok: true, pnl }),
+        (e) => ({ ok: false, error: String(e.message || e) })
+      )
+    )
+  );
+
+  const byVenue = {};
+  jobs.forEach((job, i) => {
+    if (!byVenue[job.venueKey]) byVenue[job.venueKey] = [];
+    byVenue[job.venueKey].push(fetched[i]);
+  });
+
+  const out = {};
+  for (const venue of VENUES) {
+    const parts = byVenue[venue.key] || [];
+    const failed = parts.find((p) => !p.ok);
+    const summaries = failed ? [] : parts.map((p) => (p.pnl ? summarizeXeroPnl(p.pnl, wageAccountsToUse) : null));
+    const merged = failed ? null : summaries.reduce((acc, s) => mergeSummaries(acc, s), null);
+    out[venue.key] = buildMetricSet({ summary: merged, txCount: null, xeroConfigured: !failed, squareConfigured: false }, settings);
+  }
+  return out;
 }
 
 function pctChange(curr, prev) {
@@ -888,13 +1049,24 @@ async function handleApi(req, env, url) {
       return badRequest(String(e.message || e));
     }
 
-    const [current, prev, lastYear] = await Promise.all([
+    const [current, prev, lastYear, venuesCurrent, venuesPrev, venuesLastYear] = await Promise.all([
       computeMetricsForRange(env, settings, period.start, period.end),
       computeMetricsForRange(env, settings, period.previousPeriod.start, period.previousPeriod.end),
       computeMetricsForRange(env, settings, period.sameLastYear.start, period.sameLastYear.end),
+      computeVenueMetricSets(env, settings, period.start, period.end),
+      computeVenueMetricSets(env, settings, period.previousPeriod.start, period.previousPeriod.end),
+      computeVenueMetricSets(env, settings, period.sameLastYear.start, period.sameLastYear.end),
     ]);
 
     const metrics = withComparison(buildMetricSet(current, settings), buildMetricSet(prev, settings), buildMetricSet(lastYear, settings));
+
+    const venues = {};
+    for (const venue of VENUES) {
+      venues[venue.key] = {
+        label: venue.label,
+        metrics: withComparison(venuesCurrent[venue.key], venuesPrev[venue.key], venuesLastYear[venue.key]),
+      };
+    }
 
     const lastSyncedXero = await env.TOKENS.get("lastSynced:xero");
     const lastSyncedSquare = await env.TOKENS.get("lastSynced:square");
@@ -905,6 +1077,7 @@ async function handleApi(req, env, url) {
     return json({
       period,
       metrics,
+      venues,
       unverified,
       lastSynced: { xero: lastSyncedXero ? Number(lastSyncedXero) : null, square: lastSyncedSquare ? Number(lastSyncedSquare) : null },
       errors: { pnl: current.pnlError || null, square: current.squareError || null },
@@ -936,7 +1109,7 @@ export default {
         return json({ error: String(e.message || e) }, { status: 500 });
       }
     }
-    // Static frontend (public/dashboard.html and friends) via Workers Assets.
+    // Static frontend (public/index.html and friends) via Workers Assets.
     return env.ASSETS.fetch(req);
   },
 };

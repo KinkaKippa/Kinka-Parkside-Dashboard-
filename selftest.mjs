@@ -77,18 +77,23 @@ function checkNotEmptyOrPadded(relPath, minBytes) {
   }
 }
 
-// --- public/dashboard.html ---
+// --- public/index.html ---
+// (This used to check public/dashboard.html, a leftover from an earlier
+// filename that Workers Assets never actually serves — the real page is
+// public/index.html, which this script was silently NOT checking. Fixed
+// 2026-10-22: dashboard.html can stay as harmless dead weight, but
+// selftest must validate the file that's actually live.)
 {
-  const text = checkNotEmptyOrPadded("public/dashboard.html", 3000);
+  const text = checkNotEmptyOrPadded("public/index.html", 3000);
   if (text) {
     const trimmed = text.trimEnd();
-    if (!trimmed.endsWith("</html>")) fail("public/dashboard.html doesn't end with </html> — likely truncated");
-    if (!text.includes("<script>") || !text.includes("</script>")) fail("public/dashboard.html missing a complete <script> block");
+    if (!trimmed.endsWith("</html>")) fail("public/index.html doesn't end with </html> — likely truncated");
+    if (!text.includes("<script>") || !text.includes("</script>")) fail("public/index.html missing a complete <script> block");
     const openTags = (text.match(/<script>/g) || []).length;
     const closeTags = (text.match(/<\/script>/g) || []).length;
-    if (openTags !== closeTags) fail(`public/dashboard.html has ${openTags} <script> but ${closeTags} </script> — unbalanced`);
-    for (const marker of ["doSetup", "doLogin", "loadBoard", "renderBoard", "confirmMetric"]) {
-      if (!text.includes(marker)) fail(`public/dashboard.html missing expected function: ${marker}`);
+    if (openTags !== closeTags) fail(`public/index.html has ${openTags} <script> but ${closeTags} </script> — unbalanced`);
+    for (const marker of ["doSetup", "doLogin", "loadBoard", "renderBoard", "confirmMetric", "renderVenues", "venueTileHtml"]) {
+      if (!text.includes(marker)) fail(`public/index.html missing expected function: ${marker}`);
     }
   }
 }
