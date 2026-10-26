@@ -169,7 +169,23 @@
   .tile .bar-labels span { flex: 1; text-align: center; font-size: 9px; color: var(--muted); white-space: nowrap; overflow: visible; }
   .tile .confirm-link { display: inline-block; margin-top: 8px; font-size: 11px; }
 
-  .section-title { font-size: 14px; font-weight: 600; margin: 28px 0 10px; }
+  .section-title {
+    font-size: 12px; font-weight: 600; margin: 28px 0 10px;
+    color: var(--text-secondary); text-transform: uppercase; letter-spacing: .04em;
+  }
+
+  /* ---- by-venue breakdown ---- */
+  .venue-columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+  .venue-col {
+    background: var(--page); border: 1px dashed var(--border); border-radius: 12px; padding: 14px 14px 4px;
+  }
+  .venue-col-title { font-size: 14px; font-weight: 600; margin: 0 0 10px; }
+  .venue-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 10px; }
+  .tile.tile-compact { padding: 12px 14px; }
+  .tile.tile-compact .value { font-size: 19px; margin: 4px 0 2px; }
+  .tile.tile-compact .value.not-configured { font-size: 13px; }
+  .tile.tile-compact .label { font-size: 10.5px; }
+  .tile.tile-compact .deltas { font-size: 10.5px; gap: 7px; margin-top: 6px; flex-wrap: wrap; }
   .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px; padding: 18px; margin-bottom: 14px; }
   .card h3 { margin: 0 0 4px; font-size: 15px; }
   .card p { margin: 0 0 10px; font-size: 13px; color: var(--text-secondary); }
@@ -239,6 +255,11 @@
         <span class="last-synced" id="last-synced-text"></span>
       </div>
       <div class="grid" id="metric-grid"></div>
+
+      <div id="venue-section" style="display:none">
+        <h2 class="section-title">By venue</h2>
+        <div class="venue-columns" id="venue-grid"></div>
+      </div>
     </div>
 
     <div id="tab-connections" style="display:none">
@@ -322,6 +343,11 @@ const METRIC_META = {
 // Maps a metric key to the settings.targets field it's judged against.
 // Metrics not listed here have no target, so their bars are a single plain colour.
 const TARGET_KEY_FOR_METRIC = { cogs: "cogsPct", wagePct: "wagePct", overheads: "overheadsPct", profit: "profitPct" };
+
+// Which metrics get a per-venue tile. Must match worker.js's VENUE_METRIC_KEYS —
+// Transactions/ACS stay Total-only (Square locations are a different split
+// from the Xero tracking category used for venues).
+const VENUE_METRIC_KEYS = ["revenue", "cogs", "wagePct", "overheads", "profit"];
 
 let currentSettings = null;
 
@@ -578,6 +604,64 @@ function renderBoard(data, trendData) {
     `;
     grid.appendChild(tile);
   }
+
+  renderVenues(data);
+}
+
+// Renders the "By venue" section: one column per venue, each a small grid
+// of compact tiles for the metrics in VENUE_METRIC_KEYS. No trend bars here
+// on purpose — keeps this section quick to scan rather than doubling up
+// the full weekly bar charts already shown above.
+function renderVenues(data) {
+  const section = document.getElementById("venue-section");
+  const grid = document.getElementById("venue-grid");
+  const venues = data.venues || {};
+  const venueKeys = Object.keys(venues);
+  if (!venueKeys.length) { section.style.display = "none"; return; }
+  section.style.display = "block";
+  grid.innerHTML = "";
+  for (const vKey of venueKeys) {
+    const venue = venues[vKey];
+    const col = document.createElement("div");
+    col.className = "venue-col";
+    const tiles = VENUE_METRIC_KEYS.map((key) => venueTileHtml(key, venue.metrics[key])).join("");
+    col.innerHTML = `<div class="venue-col-title">${venue.label}</div><div class="venue-tiles">${tiles}</div>`;
+    grid.appendChild(col);
+  }
+}
+
+function venueTileHtml(key, m) {
+  const meta = METRIC_META[key];
+  let valueText, valueClass = "value";
+  if (!m.configured) {
+    valueText = "Not configured";
+    valueClass += " not-configured";
+  } else if (meta.isPctPrimary) {
+    valueText = fmtPct(m.pct) ?? "—";
+  } else if (meta.money) {
+    valueText = fmtMoney(m.value) ?? "—";
+  } else {
+    valueText = m.value ?? "—";
+  }
+
+  let sub = "";
+  if (m.configured && meta.hasPct && !meta.isPctPrimary && m.pct !== null && m.pct !== undefined) {
+    sub = `${fmtPct(m.pct)} of revenue`;
+  }
+
+  const deltaRow = m.configured ? `
+    <div class="deltas">
+      ${deltaSpan("vs prior", m.change?.previousPeriod)}
+      ${deltaSpan("vs last yr", m.change?.sameLastYear)}
+    </div>` : "";
+
+  return `
+    <div class="tile tile-compact">
+      <div class="label">${meta.label}</div>
+      <div class="${valueClass}">${valueText}</div>
+      <div class="sub">${sub}</div>
+      ${deltaRow}
+    </div>`;
 }
 
 function deltaSpan(label, pct) {
