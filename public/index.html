@@ -22,8 +22,6 @@
     --serious:        #ec835a;
     --critical:       #d03b3b;
     --accent:         #2563eb;
-    --target-met:     #7a9b76;
-    --target-missed:  #b5615c;
   }
   @media (prefers-color-scheme: dark) {
     :root:where(:not([data-theme="light"])) {
@@ -42,8 +40,6 @@
       --warning:        #fab219;
       --serious:        #ec835a;
       --critical:       #e66767;
-      --target-met:     #8fb88a;
-      --target-missed:  #cc7b73;
     }
   }
   :root[data-theme="dark"] {
@@ -62,8 +58,6 @@
     --warning:        #fab219;
     --serious:        #ec835a;
     --critical:       #e66767;
-    --target-met:     #8fb88a;
-    --target-missed:  #cc7b73;
   }
 
   * { box-sizing: border-box; }
@@ -145,28 +139,19 @@
     padding: 16px 18px; position: relative;
   }
   .tile .label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
-  .tile .value { font-size: 28px; font-weight: 600; margin: 6px 0 2px; font-variant-numeric: proportional-nums; }
+  .tile .value { font-size: 30px; font-weight: 700; margin: 6px 0 2px; font-variant-numeric: proportional-nums; }
   .tile .value.not-configured { font-size: 15px; font-weight: 400; color: var(--muted); }
   .tile .sub { font-size: 12px; color: var(--text-secondary); }
-  .tile .deltas { display: flex; gap: 10px; margin-top: 8px; font-size: 12px; }
+  /* One plain-language status word, not a chart — "On track" / "Needs attention" / "Over target" /
+     "Below target" — for the four metrics that have a target set. Metrics with no target
+     (Revenue, Transactions, Average customer spend) show no pill: there's nothing to judge them
+     against, so a colour here would just be a guess dressed up as a verdict. */
+  .tile .status-pill { display: inline-block; font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 999px; margin-top: 8px; }
+  .tile .status-pill.good { background: color-mix(in srgb, var(--good) 18%, var(--surface-1)); color: var(--good-text); }
+  .tile .status-pill.bad { background: color-mix(in srgb, var(--critical) 18%, var(--surface-1)); color: var(--critical); }
+  .tile .delta { display: block; margin-top: 8px; font-size: 12px; }
   .tile .delta.up { color: var(--good-text); }
   .tile .delta.down { color: var(--critical); }
-  .tile .flag {
-    position: absolute; top: 14px; right: 14px; width: 9px; height: 9px; border-radius: 50%;
-  }
-  .tile .flag.warning { background: var(--warning); }
-  .tile .flag.critical { background: var(--critical); }
-  .tile .bars { position: relative; margin-top: 10px; display: flex; gap: 3px; }
-  .tile .bars .bar-col { flex: 1; position: relative; }
-  .tile .bars .bar-col .bar { position: absolute; left: 0; right: 0; border-radius: 2px 2px 0 0; background: var(--series-1); }
-  .tile .bars .bar-col .bar.good { background: var(--target-met); }
-  .tile .bars .bar-col .bar.bad { background: var(--target-missed); }
-  .tile .bar-labels { display: flex; gap: 3px; margin-top: 4px; }
-  /* overflow is intentionally visible: only every Nth slot has text (see
-     weeklyBarsHtml), and its neighbours are empty, so a label like "30 Jun"
-     is allowed to spill sideways into that empty room instead of being
-     clipped to fit its own narrow 1/8-width slot. */
-  .tile .bar-labels span { flex: 1; text-align: center; font-size: 9px; color: var(--muted); white-space: nowrap; overflow: visible; }
   .tile .confirm-link { display: inline-block; margin-top: 8px; font-size: 11px; }
 
   .section-title {
@@ -185,7 +170,8 @@
   .tile.tile-compact .value { font-size: 19px; margin: 4px 0 2px; }
   .tile.tile-compact .value.not-configured { font-size: 13px; }
   .tile.tile-compact .label { font-size: 10.5px; }
-  .tile.tile-compact .deltas { font-size: 10.5px; gap: 7px; margin-top: 6px; flex-wrap: wrap; }
+  .tile.tile-compact .status-pill { font-size: 10.5px; padding: 2px 8px; margin-top: 6px; }
+  .tile.tile-compact .delta { font-size: 10.5px; margin-top: 6px; }
   .card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px; padding: 18px; margin-bottom: 14px; }
   .card h3 { margin: 0 0 4px; font-size: 15px; }
   .card p { margin: 0 0 10px; font-size: 13px; color: var(--text-secondary); }
@@ -447,77 +433,21 @@ function onPeriodChange() {
   if (!isCustom) loadBoard();
 }
 
-function formatBarLabel(dateStr) {
-  // dateStr is a plain "YYYY-MM-DD" from the worker; append a fixed local
-  // time so the browser doesn't reinterpret it as UTC and shift the day.
-  const d = new Date(`${dateStr}T00:00:00`);
-  return d.toLocaleDateString("en-AU", { day: "numeric", month: "short" });
-}
-
-// Builds the weekly bar chart + labels for one tile. Bar height is scaled to
-// the biggest magnitude (positive or negative) seen across the buckets, with
-// a zero baseline so a loss week (e.g. negative profit) hangs below the line
-// instead of being clipped. Metrics with a configured target (cogs, wage %,
-// overheads, profit) get each bar coloured green/red against that target;
-// metrics with no target (revenue, transactions, average customer spend)
-// stay a single plain colour, per the owner's confirmed preference.
-function weeklyBarsHtml(key, meta, trendData, targets) {
-  const buckets = trendData.trend || [];
-  if (!buckets.length) return "";
-
-  const values = buckets.map((b) => {
-    const bm = b.metrics[key];
-    if (!bm) return null;
-    return meta.isPctPrimary ? bm.pct : (typeof bm.value === "number" ? bm.value : null);
-  });
-  if (values.filter((v) => typeof v === "number").length < 2) return "";
-
-  const pctValues = buckets.map((b) => {
-    const bm = b.metrics[key];
-    return bm && typeof bm.pct === "number" ? bm.pct : null;
-  });
-
+// Plain-language status label for the four metrics with a target (Cost of
+// goods, Wage %, Overheads, Profit) — "On track" in green, or the specific
+// reason it isn't, in red. Metrics with no target (Revenue, Transactions,
+// Average customer spend) return "" — there's nothing to judge them
+// against, so no pill is shown for them at all, by design.
+const OVER_TARGET_LABEL = { cogs: "Over target", wagePct: "Over target", overheads: "Over target", profit: "Below target" };
+function statusPillHtml(key, m, targets) {
+  if (!m.configured || m.pct === null || m.pct === undefined) return "";
   const targetKey = TARGET_KEY_FOR_METRIC[key];
   const targetVal = targetKey && targets ? targets[targetKey] : null;
-  const hasTarget = targetVal !== null && targetVal !== undefined;
-
-  const nums = values.filter((v) => typeof v === "number");
-  const maxPos = Math.max(0, ...nums);
-  const maxNeg = Math.max(0, ...nums.map((v) => -v));
-  const span = (maxPos + maxNeg) || 1;
-  const areaH = 40; // px, must match .tile .bars height below
-  const pxPerUnit = areaH / span;
-  const baseline = maxNeg * pxPerUnit; // px from the bottom where zero sits
-
-  // Only label a handful of bars, evenly spaced and always including the most
-  // recent one — labelling every single bar left no room for the month
-  // (e.g. "30 Jun"), so it was getting cut down to just "30 …".
-  const labelEvery = Math.max(1, Math.ceil(buckets.length / 4));
-
-  const barCols = [];
-  const labelSpans = [];
-  buckets.forEach((b, i) => {
-    const v = values[i];
-    const pv = pctValues[i];
-
-    let colorClass = "plain";
-    if (hasTarget && typeof pv === "number") {
-      const meetsTarget = key === "profit" ? pv >= targetVal : pv <= targetVal;
-      colorClass = meetsTarget ? "good" : "bad";
-    }
-
-    let h = 2, bottom = baseline;
-    if (typeof v === "number" && v !== 0) {
-      h = Math.max(2, Math.abs(v) * pxPerUnit);
-      bottom = v >= 0 ? baseline : baseline - h;
-    }
-
-    barCols.push(`<div class="bar-col"><div class="bar ${colorClass}" style="height:${h.toFixed(1)}px;bottom:${bottom.toFixed(1)}px;"></div></div>`);
-    const fromEnd = buckets.length - 1 - i;
-    labelSpans.push(fromEnd % labelEvery === 0 ? `<span>${formatBarLabel(b.end)}</span>` : `<span></span>`);
-  });
-
-  return `<div class="bars" style="height:${areaH}px;">${barCols.join("")}</div><div class="bar-labels">${labelSpans.join("")}</div>`;
+  if (targetVal === null || targetVal === undefined) return "";
+  const meetsTarget = key === "profit" ? m.pct >= targetVal : m.pct <= targetVal;
+  return meetsTarget
+    ? `<span class="status-pill good">On track</span>`
+    : `<span class="status-pill bad">${OVER_TARGET_LABEL[key]}</span>`;
 }
 
 async function loadBoard() {
@@ -529,13 +459,12 @@ async function loadBoard() {
     if (!s || !e) return;
     url += `&start=${s}&end=${e}`;
   }
-  const [metricsRes, trendRes] = await Promise.all([api(url), api(`/api/trend?period=${period}${period === "custom" ? url.slice(url.indexOf("&start")) : ""}`)]);
+  const metricsRes = await api(url);
   const data = await metricsRes.json();
-  const trendData = await trendRes.json();
-  renderBoard(data, trendData);
+  renderBoard(data);
 }
 
-function renderBoard(data, trendData) {
+function renderBoard(data) {
   document.getElementById("unverified-banner").style.display = data.unverified ? "block" : "none";
 
   const lastSync = data.lastSynced || {};
@@ -572,34 +501,19 @@ function renderBoard(data, trendData) {
       sub = `${fmtPct(m.pct)} of revenue`;
     }
 
-    let flag = "";
     const target = currentSettings?.targets || {};
-    if (m.configured) {
-      if (key === "wagePct" && target.wagePct != null && m.pct > target.wagePct) flag = "warning";
-      if (key === "cogs" && target.cogsPct != null && m.pct > target.cogsPct) flag = "warning";
-      if (key === "overheads" && target.overheadsPct != null && m.pct > target.overheadsPct) flag = "warning";
-      if (key === "profit" && target.profitPct != null && m.pct < target.profitPct) flag = "warning";
-      if (typeof m.value === "number" && m.value < 0) flag = "critical";
-    }
-
-    const deltaRow = m.configured ? `
-      <div class="deltas">
-        ${deltaSpan("vs prior", m.change?.previousPeriod)}
-        ${deltaSpan("vs last yr", m.change?.sameLastYear)}
-      </div>` : "";
+    const pill = statusPillHtml(key, m, target);
+    const deltaLine = m.configured ? deltaSpan("vs prior", m.change?.previousPeriod) : "";
 
     const confirmLink = m.configured && !m.verified
       ? `<button class="link confirm-link" onclick="confirmMetric('${key}')">Confirm this matches your books</button>` : "";
 
-    const bars = m.configured ? weeklyBarsHtml(key, meta, trendData, target) : "";
-
     tile.innerHTML = `
-      ${flag ? `<span class="flag ${flag}"></span>` : ""}
       <div class="label">${meta.label}</div>
       <div class="${valueClass}">${valueText}</div>
       <div class="sub">${sub}</div>
-      ${deltaRow}
-      ${bars}
+      ${pill}
+      ${deltaLine}
       ${confirmLink}
     `;
     grid.appendChild(tile);
@@ -609,9 +523,8 @@ function renderBoard(data, trendData) {
 }
 
 // Renders the "By venue" section: one column per venue, each a small grid
-// of compact tiles for the metrics in VENUE_METRIC_KEYS. No trend bars here
-// on purpose — keeps this section quick to scan rather than doubling up
-// the full weekly bar charts already shown above.
+// of compact tiles for the metrics in VENUE_METRIC_KEYS, in the same simple
+// scorecard style (big number, status pill, one delta line) as the main tiles.
 function renderVenues(data) {
   const section = document.getElementById("venue-section");
   const grid = document.getElementById("venue-grid");
@@ -649,18 +562,17 @@ function venueTileHtml(key, m) {
     sub = `${fmtPct(m.pct)} of revenue`;
   }
 
-  const deltaRow = m.configured ? `
-    <div class="deltas">
-      ${deltaSpan("vs prior", m.change?.previousPeriod)}
-      ${deltaSpan("vs last yr", m.change?.sameLastYear)}
-    </div>` : "";
+  const target = currentSettings?.targets || {};
+  const pill = statusPillHtml(key, m, target);
+  const deltaLine = m.configured ? deltaSpan("vs prior", m.change?.previousPeriod) : "";
 
   return `
     <div class="tile tile-compact">
       <div class="label">${meta.label}</div>
       <div class="${valueClass}">${valueText}</div>
       <div class="sub">${sub}</div>
-      ${deltaRow}
+      ${pill}
+      ${deltaLine}
     </div>`;
 }
 
